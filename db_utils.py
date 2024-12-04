@@ -1,105 +1,109 @@
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from typing import List
 
-# Load the cleaned data
-df = pd.read_csv('failure_data_cleaned.csv')
-
-# Ensure that 'Machine failure' is properly set as 1 for failure, 0 for no failure
-df['Machine failure'] = df['Machine failure'].apply(lambda x: 1 if x == 'Failure' else 0)
-
-# Define the categories for analysis
-torque_thresholds = [0, 50, 150]  # Example thresholds for Torque
-temperature_thresholds = [270, 320]  # Example thresholds for Temperature
-rpm_thresholds = [1000, 3000]  # Example thresholds for Rotational Speed
-
-def categorize_column(column, thresholds):
-    """Categorize machine settings into 'Low', 'Medium', 'High' based on thresholds."""
-    categories = []
-    for value in column:
-        if value < thresholds[0]:
-            categories.append('Low')
-        elif value < thresholds[1]:
-            categories.append('Medium')
-        else:
-            categories.append('High')
-    return categories
-
-# Apply categorization to each setting
-df['Torque Category'] = categorize_column(df['Torque [Nm]'], torque_thresholds)
-df['Temperature Category'] = categorize_column(df['Air temperature [K]'], temperature_thresholds)
-df['RPM Category'] = categorize_column(df['Rotational speed [rpm]'], rpm_thresholds)
-
-# Group by categories and count failures
-failure_by_torque = df.groupby('Torque Category')['Machine failure'].value_counts(normalize=True).unstack(fill_value=0)
-failure_by_temperature = df.groupby('Temperature Category')['Machine failure'].value_counts(normalize=True).unstack(fill_value=0)
-failure_by_rpm = df.groupby('RPM Category')['Machine failure'].value_counts(normalize=True).unstack(fill_value=0)
-
-# Debugging: Print out the failure by categories dataframes to inspect structure
-print("Failure by Torque Category:\n", failure_by_torque)
-print("Failure by Temperature Category:\n", failure_by_temperature)
-print("Failure by RPM Category:\n", failure_by_rpm)
-
-# Check the column names and make sure the '1' column exists
-print("Failure by Torque Columns:", failure_by_torque.columns)
-print("Failure by Temperature Columns:", failure_by_temperature.columns)
-print("Failure by RPM Columns:", failure_by_rpm.columns)
-
-# Plotting the failure by category
-# Plot Failure by Torque Category
-plt.figure(figsize=(10, 6))
-sns.barplot(x=failure_by_torque.index, y=failure_by_torque.iloc[:, 0], palette='Blues')  # Use .iloc[:, 0] for failure rate (the first column)
-plt.title("Failure Percentage by Torque Category")
-plt.xlabel("Torque Category")
-plt.ylabel("Failure Percentage")
-plt.show()
-
-# Plot Failure by Temperature Category
-plt.figure(figsize=(10, 6))
-sns.barplot(x=failure_by_temperature.index, y=failure_by_temperature.iloc[:, 0], palette='Blues')
-plt.title("Failure Percentage by Temperature Category")
-plt.xlabel("Temperature Category")
-plt.ylabel("Failure Percentage")
-plt.show()
-
-# Plot Failure by RPM Category
-plt.figure(figsize=(10, 6))
-sns.barplot(x=failure_by_rpm.index, y=failure_by_rpm.iloc[:, 0], palette='Blues')
-plt.title("Failure Percentage by RPM Category")
-plt.xlabel("RPM Category")
-plt.ylabel("Failure Percentage")
-plt.show()
-
-# Recommendations based on the analysis
-def print_recommendations():
-    print("\n--- Recommendations Based on Failure Analysis ---\n")
+# Helper function to calculate failure rates
+def calculate_failure_rate(df: pd.DataFrame, category_column: str, failure_column: str) -> pd.Series:
+    """
+    Calculate the failure rate for each category.
     
-    # Check if the 'High' torque category exists before trying to access it
-    if 'High' in failure_by_torque.index and failure_by_torque.loc['High', 0] > 0.05:
-        print("1. High torque settings have a higher failure rate. Consider limiting the torque to the 'Medium' category to reduce failures.")
-    else:
-        print("1. Torque seems to have a minimal impact on failure. Continue using the current range, but monitor closely for further analysis.")
+    Args:
+        df (pd.DataFrame): The dataset to analyze.
+        category_column (str): The column containing the categories (e.g., 'Torque', 'Temperature').
+        failure_column (str): The column indicating whether the machine failed (0 or 1).
     
-    # Check if the 'High' temperature category exists before trying to access it
-    if 'High' in failure_by_temperature.index and failure_by_temperature.loc['High', 0] > 0.05:
-        print("2. High process temperature is associated with a higher failure rate. It's advisable to operate the machine within the 'Medium' temperature range to minimize risk.")
-    else:
-        print("2. Temperature seems to have a minimal impact on failure. Consider operating within the high-temperature range if needed, but with caution.")
+    Returns:
+        pd.Series: A Series with the failure rate for each category.
+    """
+    failure_by_category = df.groupby(category_column)[failure_column].mean()
+    return failure_by_category
 
-    # Check if the 'High' RPM category exists before trying to access it
-    if 'High' in failure_by_rpm.index and failure_by_rpm.loc['High', 0] > 0.05:
-        print("3. High RPM has a higher failure rate. You may want to reduce the RPM to 'Medium' or 'Low' categories to decrease failure risk.")
-    else:
-        print("3. RPM does not seem to be a significant risk factor. High RPM can continue being used but monitor closely.")
-        
-    print("\n--- General Recommendations ---")
-    print("1. Implement real-time monitoring of machine parameters (Torque, Temperature, RPM) to detect and mitigate failure risks.")
-    print("2. Consider setting automated limits for torque, temperature, and RPM to ensure they stay within safe operational thresholds.")
-    print("3. Conduct periodic maintenance checks to ensure machines are operating at optimal settings and reduce the risk of failure.")
-    print("4. Use predictive maintenance models to forecast failure risks based on historical operational data.")
+# Function to plot failure by categories
+def plot_failure_by_category(failure_data: pd.Series, category_name: str):
+    """
+    Plot a barplot of failure rates by category.
+    
+    Args:
+        failure_data (pd.Series): A Series containing failure rates by category.
+        category_name (str): The name of the category being analyzed (e.g., 'Torque').
+    """
+    sns.barplot(x=failure_data.index, y=failure_data.values, palette='Blues')
+    plt.title(f"Failure by {category_name} Category")
+    plt.xlabel(f"{category_name} Category")
+    plt.ylabel("Failure Rate")
+    plt.show()
 
-# Print the recommendations based on the failure analysis
-print_recommendations()
+# Function to generate recommendations based on failure rates
+def generate_recommendations(failure_by_torque: pd.Series, failure_by_temperature: pd.Series, failure_by_rpm: pd.Series):
+    """
+    Generate recommendations based on the failure rates for different categories.
+    
+    Args:
+        failure_by_torque (pd.Series): The failure rate by torque category.
+        failure_by_temperature (pd.Series): The failure rate by temperature category.
+        failure_by_rpm (pd.Series): The failure rate by RPM category.
+    
+    Returns:
+        List[str]: A list of recommendations based on the failure rates.
+    """
+    recommendations = []
+
+    if failure_by_torque.get('High', 0) > 0.05:
+        recommendations.append("High torque settings have a higher failure rate. Consider limiting the torque to the 'Medium' category.")
+    
+    if failure_by_temperature.get('High', 0) > 0.05:
+        recommendations.append("High temperature settings have a higher failure rate. Try reducing the temperature to the 'Medium' category.")
+    
+    if failure_by_rpm.get('High', 0) > 0.05:
+        recommendations.append("High RPM settings have a higher failure rate. Consider reducing the RPM to a safer range.")
+    
+    return recommendations
+
+# Function to print recommendations
+def print_recommendations(failure_by_torque: pd.Series, failure_by_temperature: pd.Series, failure_by_rpm: pd.Series):
+    """
+    Print out the recommendations based on the failure analysis.
+    
+    Args:
+        failure_by_torque (pd.Series): The failure rate by torque category.
+        failure_by_temperature (pd.Series): The failure rate by temperature category.
+        failure_by_rpm (pd.Series): The failure rate by RPM category.
+    """
+    print("--- Recommendations Based on Failure Analysis ---\n")
+    recommendations = generate_recommendations(failure_by_torque, failure_by_temperature, failure_by_rpm)
+    
+    if not recommendations:
+        print("No significant failure rates detected. The system is functioning well.")
+    else:
+        for rec in recommendations:
+            print(f" - {rec}")
+
+# Main execution block
+if __name__ == "__main__":
+    # Example data (replace this with actual data reading logic)
+    data = {
+        'Torque': ['High', 'Medium', 'High', 'Medium', 'High'],
+        'Temperature': ['High', 'Medium', 'Medium', 'High', 'Medium'],
+        'RPM': ['High', 'Medium', 'Medium', 'Medium', 'High'],
+        'Machine failure': [1, 0, 1, 0, 1]
+    }
+    
+    df = pd.DataFrame(data)
+
+    # Calculate failure rates by categories
+    failure_by_torque = calculate_failure_rate(df, 'Torque', 'Machine failure')
+    failure_by_temperature = calculate_failure_rate(df, 'Temperature', 'Machine failure')
+    failure_by_rpm = calculate_failure_rate(df, 'RPM', 'Machine failure')
+
+    # Plot failure rates
+    plot_failure_by_category(failure_by_torque, 'Torque')
+    plot_failure_by_category(failure_by_temperature, 'Temperature')
+    plot_failure_by_category(failure_by_rpm, 'RPM')
+
+    # Print out recommendations based on failure analysis
+    print_recommendations(failure_by_torque, failure_by_temperature, failure_by_rpm)
+
 
 
 
