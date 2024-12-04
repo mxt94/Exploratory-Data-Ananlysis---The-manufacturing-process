@@ -1,231 +1,117 @@
-import yaml
-import numpy as np
 import pandas as pd
+import seaborn as sns
 import matplotlib.pyplot as plt
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
 
-class RDSDatabaseConnector:
-    def __init__(self, credentials: dict):
-        self._host = credentials['RDS_HOST']
-        self._database = credentials['RDS_DATABASE']
-        self._user = credentials['RDS_USER']
-        self._password = credentials['RDS_PASSWORD']
-        self._port = credentials['RDS_PORT']
-        self._engine: Engine = None
+# Load the cleaned data
+df = pd.read_csv('failure_data_cleaned.csv')
 
-    def initialize_engine(self) -> None:
-        connection_string = f"postgresql://{self._user}:{self._password}@{self._host}:{self._port}/{self._database}"
-        self._engine = create_engine(connection_string)
-        print("SQLAlchemy engine initialized.")
+# Ensure that 'Machine failure' is properly set as 1 for failure, 0 for no failure
+df['Machine failure'] = df['Machine failure'].apply(lambda x: 1 if x == 'Failure' else 0)
 
-    def extract_data(self, table_name: str) -> pd.DataFrame:
-        if self._engine is None:
-            raise RuntimeError("Database engine is not initialized.")
-        
-        query = f"SELECT * FROM {table_name};"
-        return pd.read_sql(query, self._engine)
+# Define the categories for analysis
+torque_thresholds = [0, 50, 150]  # Example thresholds for Torque
+temperature_thresholds = [270, 320]  # Example thresholds for Temperature
+rpm_thresholds = [1000, 3000]  # Example thresholds for Rotational Speed
 
-class DataFrameTransform:
-    def __init__(self, dataframe: pd.DataFrame):
-        self.dataframe = dataframe
-
-    def check_missing_values(self) -> pd.DataFrame:
-        null_counts = self.dataframe.isnull().sum()
-        null_percentage = (null_counts / len(self.dataframe)) * 100
-        return pd.DataFrame({'Count': null_counts, 'Percentage': null_percentage})
-
-    def drop_columns_with_missing_values(self, threshold: float = 50.0) -> None:
-        missing_info = self.check_missing_values()
-        columns_to_drop = missing_info[missing_info['Percentage'] > threshold].index
-        self.dataframe.drop(columns=columns_to_drop, inplace=True)
-        print(f"Dropped columns: {list(columns_to_drop)}")
-
-    def clean_column(self, column: str) -> None:
-        """Cleans a column by converting values to numeric, handling non-numeric values."""
-        print(f"Cleaning column: '{column}'")
-        # Check if column is numeric
-        if self.dataframe[column].dtype != 'object':  # Only clean numeric columns
-            # Convert to numeric, coercing errors to NaN (i.e., invalid entries like 'L50595')
-            self.dataframe[column] = pd.to_numeric(self.dataframe[column], errors='coerce')
-
-            # Check for problematic rows after coercion
-            problematic_rows = self.dataframe[column].isnull()
-            if problematic_rows.any():
-                print(f"Found problematic rows in '{column}' (non-numeric values turned into NaN):")
-                print(self.dataframe[problematic_rows][column])
-
-    def impute_missing_values(self) -> None:
-        """Impute missing values for each column, cleaning as necessary."""
-        for column in self.dataframe.columns:
-            if column == 'product ID':  # Skip 'product ID' column for numerical operations
-                continue
-
-            if self.dataframe[column].isnull().any():
-                print(f"\nProcessing column: '{column}'")
-
-                # Clean the column to remove or coerce non-numeric values
-                self.clean_column(column)
-
-                # Impute missing values
-                if self.dataframe[column].dtype in [np.float64, np.int64]:
-                    # If it's numeric, impute missing values with the median
-                    median_value = self.dataframe[column].median()
-                    self.dataframe[column] = self.dataframe[column].fillna(median_value)
-                    print(f"Imputed missing values in '{column}' with median: {median_value}")
-                else:
-                    # If it's still not numeric (after coercion), impute with mode (most frequent value)
-                    mode_value = self.dataframe[column].mode()[0]
-                    self.dataframe[column] = self.dataframe[column].fillna(mode_value)
-                    print(f"Imputed missing values in '{column}' with mode: {mode_value}")
-
-    def identify_outliers(self, column: str, method: str = 'IQR') -> list:
-        """Identify outliers using the IQR method."""
-        if self.dataframe[column].dtype in [np.float64, np.int64]:  # Only detect outliers on numeric columns
-            if method == 'IQR':
-                Q1 = self.dataframe[column].quantile(0.25)
-                Q3 = self.dataframe[column].quantile(0.75)
-                IQR = Q3 - Q1
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-                outliers = self.dataframe[(self.dataframe[column] < lower_bound) | (self.dataframe[column] > upper_bound)]
-                print(f"Identified outliers in '{column}':")
-                print(outliers)
-                return outliers.index.tolist()
-            else:
-                raise ValueError("Method not supported. Please use 'IQR'.")
+def categorize_column(column, thresholds):
+    """Categorize machine settings into 'Low', 'Medium', 'High' based on thresholds."""
+    categories = []
+    for value in column:
+        if value < thresholds[0]:
+            categories.append('Low')
+        elif value < thresholds[1]:
+            categories.append('Medium')
         else:
-            return []
+            categories.append('High')
+    return categories
 
-    def remove_outliers(self, column: str, outliers_indices: list) -> None:
-        """Remove outliers by dropping rows with outlier values."""
-        if len(outliers_indices) > 0:
-            self.dataframe.drop(index=outliers_indices, inplace=True)
-            print(f"Removed {len(outliers_indices)} outlier rows from '{column}'.")
+# Apply categorization to each setting
+df['Torque Category'] = categorize_column(df['Torque [Nm]'], torque_thresholds)
+df['Temperature Category'] = categorize_column(df['Air temperature [K]'], temperature_thresholds)
+df['RPM Category'] = categorize_column(df['Rotational speed [rpm]'], rpm_thresholds)
 
-    def transform_skewed_columns(self, skewed_columns: list) -> None:
-        """Apply transformation (log transformation) to reduce skewness."""
-        for column in skewed_columns:
-            if self.dataframe[column].dtype in [np.float64, np.int64]:
-                original_skew = self.dataframe[column].skew()
-                # Apply log transformation to reduce skewness
-                self.dataframe[column] = np.log1p(self.dataframe[column])
-                new_skew = self.dataframe[column].skew()
-                print(f"Transformed '{column}' from skewness {original_skew:.2f} to {new_skew:.2f}")
+# Group by categories and count failures
+failure_by_torque = df.groupby('Torque Category')['Machine failure'].value_counts(normalize=True).unstack(fill_value=0)
+failure_by_temperature = df.groupby('Temperature Category')['Machine failure'].value_counts(normalize=True).unstack(fill_value=0)
+failure_by_rpm = df.groupby('RPM Category')['Machine failure'].value_counts(normalize=True).unstack(fill_value=0)
 
-    def remove_highly_correlated_columns(self, threshold: float = 0.9) -> None:
-        """Remove columns that are highly correlated (above the threshold)."""
-        corr_matrix = self.dataframe.corr()
-        print("\nCorrelation Matrix:\n", corr_matrix)
+# Debugging: Print out the failure by categories dataframes to inspect structure
+print("Failure by Torque Category:\n", failure_by_torque)
+print("Failure by Temperature Category:\n", failure_by_temperature)
+print("Failure by RPM Category:\n", failure_by_rpm)
 
-        # Find highly correlated columns
-        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(np.bool))
-        to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
-        self.dataframe.drop(columns=to_drop, inplace=True)
-        print(f"\nDropped highly correlated columns: {to_drop}")
+# Check the column names and make sure the '1' column exists
+print("Failure by Torque Columns:", failure_by_torque.columns)
+print("Failure by Temperature Columns:", failure_by_temperature.columns)
+print("Failure by RPM Columns:", failure_by_rpm.columns)
 
-class Plotter:
-    @staticmethod
-    def plot_missing_values(missing_data: pd.DataFrame) -> None:
-        plt.figure(figsize=(10, 6))
-        missing_data['Percentage'].plot(kind='bar', color='skyblue')
-        plt.title('Percentage of Missing Values in Each Column')
-        plt.xlabel('Columns')
-        plt.ylabel('Percentage of Missing Values')
-        plt.axhline(y=0, color='gray', linewidth=0.8)
-        plt.xticks(rotation=45)
-        plt.show()
+# Plotting the failure by category
+# Plot Failure by Torque Category
+plt.figure(figsize=(10, 6))
+sns.barplot(x=failure_by_torque.index, y=failure_by_torque.iloc[:, 0], palette='Blues')  # Use .iloc[:, 0] for failure rate (the first column)
+plt.title("Failure Percentage by Torque Category")
+plt.xlabel("Torque Category")
+plt.ylabel("Failure Percentage")
+plt.show()
 
-    @staticmethod
-    def plot_skewness(dataframe: pd.DataFrame) -> None:
-        skewness = dataframe.skew()
-        plt.figure(figsize=(10, 6))
-        skewness.plot(kind='bar', color='orange')
-        plt.title('Skewness of Each Column')
-        plt.axhline(0, color='gray', linewidth=0.8)
-        plt.ylabel('Skewness')
-        plt.xticks(rotation=45)
-        plt.show()
+# Plot Failure by Temperature Category
+plt.figure(figsize=(10, 6))
+sns.barplot(x=failure_by_temperature.index, y=failure_by_temperature.iloc[:, 0], palette='Blues')
+plt.title("Failure Percentage by Temperature Category")
+plt.xlabel("Temperature Category")
+plt.ylabel("Failure Percentage")
+plt.show()
 
-    @staticmethod
-    def plot_outliers(dataframe: pd.DataFrame, column: str) -> None:
-        """Plot boxplot for detecting outliers."""
-        plt.figure(figsize=(10, 6))
-        dataframe.boxplot(column=column)
-        plt.title(f'Boxplot for {column}')
-        plt.show()
+# Plot Failure by RPM Category
+plt.figure(figsize=(10, 6))
+sns.barplot(x=failure_by_rpm.index, y=failure_by_rpm.iloc[:, 0], palette='Blues')
+plt.title("Failure Percentage by RPM Category")
+plt.xlabel("RPM Category")
+plt.ylabel("Failure Percentage")
+plt.show()
 
-def load_credentials(filepath: str = 'credentials.yaml') -> dict:
-    with open(filepath, 'r') as file:
-        credentials = yaml.safe_load(file)
-    return credentials
+# Recommendations based on the analysis
+def print_recommendations():
+    print("\n--- Recommendations Based on Failure Analysis ---\n")
+    
+    # Check if the 'High' torque category exists before trying to access it
+    if 'High' in failure_by_torque.index and failure_by_torque.loc['High', 0] > 0.05:
+        print("1. High torque settings have a higher failure rate. Consider limiting the torque to the 'Medium' category to reduce failures.")
+    else:
+        print("1. Torque seems to have a minimal impact on failure. Continue using the current range, but monitor closely for further analysis.")
+    
+    # Check if the 'High' temperature category exists before trying to access it
+    if 'High' in failure_by_temperature.index and failure_by_temperature.loc['High', 0] > 0.05:
+        print("2. High process temperature is associated with a higher failure rate. It's advisable to operate the machine within the 'Medium' temperature range to minimize risk.")
+    else:
+        print("2. Temperature seems to have a minimal impact on failure. Consider operating within the high-temperature range if needed, but with caution.")
 
-def save_to_csv(dataframe: pd.DataFrame, filename: str) -> None:
-    dataframe.to_csv(filename, index=False)
-    print(f"Data saved to {filename}.")
-
-def load_data_from_csv(filename: str) -> pd.DataFrame:
-    df = pd.read_csv(filename)
-    print(f"Data shape: {df.shape}")
-    return df
-
-if __name__ == "__main__":
-    try:
-        # Load credentials and initialize the database connector
-        credentials = load_credentials()
-        db_connector = RDSDatabaseConnector(credentials)
-        db_connector.initialize_engine()
+    # Check if the 'High' RPM category exists before trying to access it
+    if 'High' in failure_by_rpm.index and failure_by_rpm.loc['High', 0] > 0.05:
+        print("3. High RPM has a higher failure rate. You may want to reduce the RPM to 'Medium' or 'Low' categories to decrease failure risk.")
+    else:
+        print("3. RPM does not seem to be a significant risk factor. High RPM can continue being used but monitor closely.")
         
-        # Extract the data
-        failure_data_df = db_connector.extract_data('failure_data')
+    print("\n--- General Recommendations ---")
+    print("1. Implement real-time monitoring of machine parameters (Torque, Temperature, RPM) to detect and mitigate failure risks.")
+    print("2. Consider setting automated limits for torque, temperature, and RPM to ensure they stay within safe operational thresholds.")
+    print("3. Conduct periodic maintenance checks to ensure machines are operating at optimal settings and reduce the risk of failure.")
+    print("4. Use predictive maintenance models to forecast failure risks based on historical operational data.")
 
-        # Initialize the DataFrameTransform class
-        transformer = DataFrameTransform(failure_data_df)
+# Print the recommendations based on the failure analysis
+print_recommendations()
 
-        # Check and visualize missing values before handling
-        missing_info_before = transformer.check_missing_values()
-        print("Missing values before handling:")
-        print(missing_info_before)
-        Plotter.plot_missing_values(missing_info_before)
 
-        # Drop columns with excessive missing values
-        transformer.drop_columns_with_missing_values(threshold=50.0)
 
-        # Impute missing values
-        transformer.impute_missing_values()
 
-        # Visualize outliers before removing
-        columns_to_check_for_outliers = transformer.dataframe.select_dtypes(include=[np.float64, np.int64]).columns
-        for column in columns_to_check_for_outliers:
-            Plotter.plot_outliers(transformer.dataframe, column)
 
-        # Identify and remove outliers
-        for column in columns_to_check_for_outliers:
-            outliers = transformer.identify_outliers(column)
-            transformer.remove_outliers(column, outliers)
 
-        # Visualize outliers after removal
-        for column in columns_to_check_for_outliers:
-            Plotter.plot_outliers(transformer.dataframe, column)
 
-        # Remove highly correlated columns
-        transformer.remove_highly_correlated_columns(threshold=0.9)
 
-        # Identify and visualize skewed columns
-        skewed_columns = transformer.dataframe.skew()[transformer.dataframe.skew().abs() > 1].index.tolist()
-        Plotter.plot_skewness(failure_data_df)
 
-        # Transform skewed columns
-        transformer.transform_skewed_columns(skewed_columns)
 
-        # Visualize skewness after transformation
-        Plotter.plot_skewness(transformer.dataframe)
 
-        # Save a copy of the transformed DataFrame for comparison
-        save_to_csv(transformer.dataframe, 'transformed_failure_data.csv')
 
-    except Exception as e:
-        print(f"An error occurred: {e}")
 
 
 
