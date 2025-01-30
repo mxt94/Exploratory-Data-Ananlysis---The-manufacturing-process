@@ -1,108 +1,72 @@
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from typing import List
+import yaml
+import pandas as pd 
+from sqlalchemy import create_engine
 
-# Helper function to calculate failure rates
-def calculate_failure_rate(df: pd.DataFrame, category_column: str, failure_column: str) -> pd.Series:
-    """
-    Calculate the failure rate for each category.
+class RDSDatabaseConnector:
+    def __init__(self, credentials):
+        """Initialize the database connector with the provided credentials."""
+        self.host = credentials['RDS_HOST']
+        self.database = credentials['RDS_DATABASE']
+        self.user = credentials['RDS_USER']
+        self.password = credentials['RDS_PASSWORD']
+        self.port = credentials['RDS_PORT']
+        self.engine = None
     
-    Args:
-        df (pd.DataFrame): The dataset to analyze.
-        category_column (str): The column containing the categories (e.g., 'Torque', 'Temperature').
-        failure_column (str): The column indicating whether the machine failed (0 or 1).
+    def initialize_engine(self):
+        """Initialize a SQLAlchemy engine using the provided credentials."""
+        connection_string = f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+        self.engine = create_engine(connection_string)
+        print("SQLAlchemy engine initialized.")
     
-    Returns:
-        pd.Series: A Series with the failure rate for each category.
-    """
-    failure_by_category = df.groupby(category_column)[failure_column].mean()
-    return failure_by_category
+    def extract_data(self, table_name):
+        """Extract data from the specified table and return it as a Pandas DataFrame."""
+        if self.engine is None:
+            raise Exception("Database engine is not initialized.")
+        
+        query = f"SELECT * FROM {table_name};"
+        df = pd.read_sql(query, self.engine)
+        return df
 
-# Function to plot failure by categories
-def plot_failure_by_category(failure_data: pd.Series, category_name: str):
-    """
-    Plot a barplot of failure rates by category.
-    
-    Args:
-        failure_data (pd.Series): A Series containing failure rates by category.
-        category_name (str): The name of the category being analyzed (e.g., 'Torque').
-    """
-    sns.barplot(x=failure_data.index, y=failure_data.values, palette='Blues')
-    plt.title(f"Failure by {category_name} Category")
-    plt.xlabel(f"{category_name} Category")
-    plt.ylabel("Failure Rate")
-    plt.show()
+def load_credentials(filepath='credentials.yaml'):
+    """Load database credentials from a YAML file and return as a dictionary."""
+    with open(filepath, 'r') as file:
+        credentials = yaml.safe_load(file)
+    print(f"Loaded credentials: {credentials}")  # Debugging line
+    return credentials
 
-# Function to generate recommendations based on failure rates
-def generate_recommendations(failure_by_torque: pd.Series, failure_by_temperature: pd.Series, failure_by_rpm: pd.Series):
-    """
-    Generate recommendations based on the failure rates for different categories.
-    
-    Args:
-        failure_by_torque (pd.Series): The failure rate by torque category.
-        failure_by_temperature (pd.Series): The failure rate by temperature category.
-        failure_by_rpm (pd.Series): The failure rate by RPM category.
-    
-    Returns:
-        List[str]: A list of recommendations based on the failure rates.
-    """
-    recommendations = []
+def save_to_csv(df, filename):
+    """Save the DataFrame to a CSV file."""
+    df.to_csv(filename, index=False)
+    print(f"Data saved to {filename}.")
 
-    if failure_by_torque.get('High', 0) > 0.05:
-        recommendations.append("High torque settings have a higher failure rate. Consider limiting the torque to the 'Medium' category.")
+def load_data_from_csv(filename):
+    """Load data from a CSV file into a Pandas DataFrame."""
+    df = pd.read_csv(filename)
     
-    if failure_by_temperature.get('High', 0) > 0.05:
-        recommendations.append("High temperature settings have a higher failure rate. Try reducing the temperature to the 'Medium' category.")
+    # Print the shape of the DataFrame
+    print(f"Data shape: {df.shape}")
     
-    if failure_by_rpm.get('High', 0) > 0.05:
-        recommendations.append("High RPM settings have a higher failure rate. Consider reducing the RPM to a safer range.")
+    # Print a sample of the data
+    print("Sample data:")
+    print(df.head())
     
-    return recommendations
-
-# Function to print recommendations
-def print_recommendations(failure_by_torque: pd.Series, failure_by_temperature: pd.Series, failure_by_rpm: pd.Series):
-    """
-    Print out the recommendations based on the failure analysis.
-    
-    Args:
-        failure_by_torque (pd.Series): The failure rate by torque category.
-        failure_by_temperature (pd.Series): The failure rate by temperature category.
-        failure_by_rpm (pd.Series): The failure rate by RPM category.
-    """
-    print("--- Recommendations Based on Failure Analysis ---\n")
-    recommendations = generate_recommendations(failure_by_torque, failure_by_temperature, failure_by_rpm)
-    
-    if not recommendations:
-        print("No significant failure rates detected. The system is functioning well.")
-    else:
-        for rec in recommendations:
-            print(f" - {rec}")
-
-# Main execution block
+    return df
 if __name__ == "__main__":
-    # Example data (replace this with actual data reading logic)
-    data = {
-        'Torque': ['High', 'Medium', 'High', 'Medium', 'High'],
-        'Temperature': ['High', 'Medium', 'Medium', 'High', 'Medium'],
-        'RPM': ['High', 'Medium', 'Medium', 'Medium', 'High'],
-        'Machine failure': [1, 0, 1, 0, 1]
-    }
-    
-    df = pd.DataFrame(data)
-
-    # Calculate failure rates by categories
-    failure_by_torque = calculate_failure_rate(df, 'Torque', 'Machine failure')
-    failure_by_temperature = calculate_failure_rate(df, 'Temperature', 'Machine failure')
-    failure_by_rpm = calculate_failure_rate(df, 'RPM', 'Machine failure')
-
-    # Plot failure rates
-    plot_failure_by_category(failure_by_torque, 'Torque')
-    plot_failure_by_category(failure_by_temperature, 'Temperature')
-    plot_failure_by_category(failure_by_rpm, 'RPM')
-
-    # Print out recommendations based on failure analysis
-    print_recommendations(failure_by_torque, failure_by_temperature, failure_by_rpm)
+    try:
+        credentials = load_credentials()
+        
+        db_connector = RDSDatabaseConnector(credentials)
+        db_connector.initialize_engine()
+        
+        failure_data_df = db_connector.extract_data('failure_data')
+        
+        save_to_csv(failure_data_df, 'failure_data.csv')
+        
+        # Load the data from CSV and print the details
+        loaded_data = load_data_from_csv('failure_data.csv')
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
 
